@@ -224,7 +224,11 @@ active boot switches: -d:release\n",
                 stdout: String::from("7.3.8"),
                 stderr: String::default(),
             })
-        }
+        },
+        "pulumi version" => Some(CommandOutput{
+            stdout: String::from("1.2.3-ver.1631311768+e696fb6c"),
+            stderr: String::default(),
+        }),
         "purs --version" => Some(CommandOutput {
             stdout: String::from("0.13.5\n"),
             stderr: String::default(),
@@ -314,15 +318,24 @@ CMake suite maintained and supported by Kitware (kitware.com/cmake).\n",
     }
 }
 
-/// Wraps ANSI color escape sequences in the shell-appropriate wrappers.
+/// Wraps ANSI color escape sequences and other interpretable characters
+/// that need to be escaped in the shell-appropriate wrappers.
 pub fn wrap_colorseq_for_shell(mut ansi: String, shell: Shell) -> String {
-    // Bash might interepret baskslashes, backticks and $
-    // see #658 for more details
-    if shell == Shell::Bash {
-        ansi = ansi.replace('\\', r"\\");
-        ansi = ansi.replace('$', r"\$");
-        ansi = ansi.replace('`', r"\`");
-    }
+    // Handle other interpretable characters
+    match shell {
+        // Bash might interepret baskslashes, backticks and $
+        // see #658 for more details
+        Shell::Bash => {
+            ansi = ansi.replace('\\', r"\\");
+            ansi = ansi.replace('$', r"\$");
+            ansi = ansi.replace('`', r"\`");
+        }
+        Shell::Zsh => {
+            // % is an escape in zsh, see PROMPT in `man zshmisc`
+            ansi = ansi.replace('%', "%%");
+        }
+        _ => {}
+    };
 
     const ESCAPE_BEGIN: char = '\u{1b}';
     const ESCAPE_END: char = 'm';
@@ -488,6 +501,21 @@ fn render_time_component((component, suffix): (&u128, &&str)) -> String {
 
 pub fn home_dir() -> Option<PathBuf> {
     directories_next::BaseDirs::new().map(|base_dirs| base_dirs.home_dir().to_owned())
+}
+
+const HEXTABLE: &[char] = &[
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+];
+
+/// Encode a u8 slice into a hexadecimal string.
+pub fn encode_to_hex(slice: &[u8]) -> String {
+    // let mut j = 0;
+    let mut dst = Vec::with_capacity(slice.len() * 2);
+    for &v in slice {
+        dst.push(HEXTABLE[(v >> 4) as usize] as u8);
+        dst.push(HEXTABLE[(v & 0x0f) as usize] as u8);
+    }
+    String::from_utf8(dst).unwrap()
 }
 
 #[cfg(test)]
@@ -679,6 +707,15 @@ mod tests {
         );
     }
     #[test]
+    fn test_zsh_escape() {
+        let test = "10%";
+        assert_eq!(wrap_colorseq_for_shell(test.to_owned(), Shell::Zsh), "10%%");
+        assert_eq!(
+            wrap_colorseq_for_shell(test.to_owned(), Shell::PowerShell),
+            test
+        );
+    }
+    #[test]
     fn test_get_command_string_output() {
         let case1 = CommandOutput {
             stdout: String::from("stdout"),
@@ -690,5 +727,13 @@ mod tests {
             stderr: String::from("stderr"),
         };
         assert_eq!(get_command_string_output(case2), "stderr");
+    }
+
+    #[test]
+    fn sha1_hex() {
+        assert_eq!(
+            encode_to_hex(&[8, 13, 9, 189, 129, 94]),
+            "080d09bd815e".to_string()
+        );
     }
 }

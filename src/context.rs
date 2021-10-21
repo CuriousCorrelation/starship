@@ -15,6 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::string::String;
 use std::time::{Duration, Instant};
+use terminal_size::terminal_size;
 
 /// Context contains data or common methods that may be used by multiple modules.
 /// The data contained within Context will be relevant to this particular rendering
@@ -45,6 +46,12 @@ pub struct Context<'a> {
 
     /// The shell the user is assumed to be running
     pub shell: Shell,
+
+    /// Construct the right prompt instead of the left prompt
+    pub right: bool,
+
+    /// Width of terminal, or zero if width cannot be detected.
+    pub width: usize,
 
     /// A HashMap of environment variable mocks
     #[cfg(test)]
@@ -107,10 +114,12 @@ impl<'a> Context<'a> {
             .map(|(a, b)| (*a, b.vals.first().cloned().unwrap().into_string().unwrap()))
             .collect();
 
-        // Pipestatus is an arguments list
         let pipestatus = arguments
             .values_of("pipestatus")
-            .map(|args| args.into_iter().map(String::from).collect());
+            .map(Context::get_and_flatten_pipestatus)
+            .flatten();
+
+        log::trace!("Received completed pipestatus of {:?}", pipestatus);
 
         // Canonicalize the current path to resolve symlinks, etc.
         // NOTE: On Windows this converts the path to extended-path syntax.
@@ -119,6 +128,14 @@ impl<'a> Context<'a> {
         let logical_dir = logical_path;
 
         let cmd_timeout = Duration::from_millis(config.get_root_config().command_timeout);
+
+        let right = arguments.is_present("right");
+
+        let width = arguments
+            .value_of("terminal_width")
+            .and_then(|w| w.parse().ok())
+            .or_else(|| terminal_size().map(|(w, _)| w.0 as usize))
+            .unwrap_or(80);
 
         Context {
             config,
@@ -129,6 +146,8 @@ impl<'a> Context<'a> {
             dir_contents: OnceCell::new(),
             repo: OnceCell::new(),
             shell,
+            right,
+            width,
             #[cfg(test)]
             env: HashMap::new(),
             #[cfg(test)]
@@ -181,6 +200,26 @@ impl<'a> Context<'a> {
             return utils::home_dir().unwrap().join(without_home);
         }
         dir
+    }
+
+    /// Reads and appropriately flattens multiple args for pipestatus
+    pub fn get_and_flatten_pipestatus(args: clap::Values) -> Option<Vec<String>> {
+        // Due to shell differences, we can potentially receive individual or space
+        // separated inputs, e.g. "0","1","2","0" is the same as "0 1 2 0" and
+        // "0 1", "2 0". We need to accept all these formats and return a Vec<String>
+        let parsed_vals = args
+            .into_iter()
+            .map(|x| x.split_ascii_whitespace())
+            .flatten()
+            .map(|x| x.to_string())
+            .collect::<Vec<String>>();
+        // If the vector is zero-length, we should pretend that we didn't get a
+        // pipestatus at all (since this is the input `--pipestatus=""`)
+        if parsed_vals.is_empty() {
+            None
+        } else {
+            Some(parsed_vals)
+        }
     }
 
     /// Create a new module
